@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { timingSafeEqual } from "node:crypto";
 import si from "systeminformation";
 import {
   docker,
@@ -15,8 +16,43 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 
+// Basic-авторизация. Включается, только если заданы DASH_USER и DASH_PASS.
+// Без них дашборд открыт (удобно для локальной разработки).
+const AUTH_USER = process.env.DASH_USER;
+const AUTH_PASS = process.env.DASH_PASS;
+const AUTH_ENABLED = Boolean(AUTH_USER && AUTH_PASS);
+
+function safeEqual(a, b) {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
+// Проверяет заголовок Authorization у любого http-запроса (REST или WS upgrade).
+function isAuthorized(req) {
+  if (!AUTH_ENABLED) return true;
+  const header = req.headers.authorization || "";
+  const [scheme, encoded] = header.split(" ");
+  if (scheme !== "Basic" || !encoded) return false;
+  const decoded = Buffer.from(encoded, "base64").toString();
+  const sep = decoded.indexOf(":");
+  if (sep === -1) return false;
+  const user = decoded.slice(0, sep);
+  const pass = decoded.slice(sep + 1);
+  return safeEqual(user, AUTH_USER) && safeEqual(pass, AUTH_PASS);
+}
+
 const app = express();
 app.use(express.json());
+
+// Защищаем всё: страницу, статику, API.
+app.use((req, res, next) => {
+  if (isAuthorized(req)) return next();
+  res.set("WWW-Authenticate", 'Basic realm="Docker Dashboard"');
+  res.status(401).send("Authentication required");
+});
+
 app.use(express.static(join(__dirname, "..", "public")));
 
 // --- REST API ---
@@ -103,7 +139,15 @@ app.get("/api/system", async (_req, res) => {
 // --- WebSocket: стриминг логов контейнера ---
 
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: "/api/logs" });
+const wss = new WebSocketServer({
+  server,
+  path: "/api/logs",
+  // Браузер отправляет тот же basic-auth заголовок при WS-рукопожатии.
+  verifyClient: ({ req }, done) => {
+    if (isAuthorized(req)) return done(true);
+    done(false, 401, "Authentication required");
+  },
+});
 
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, "http://localhost");
