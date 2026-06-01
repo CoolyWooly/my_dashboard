@@ -1,0 +1,15 @@
+services:
+  dashboard:
+    build: .
+    container_name: docker-dashboard
+    restart: unless-stopped
+    ports:
+      # Слушаем только localhost — наружу пробрасывать через VPN/SSH-туннель
+      # или reverse-proxy. Поменяй на "3000:3000", если firewall закрывает порт.
+      - "127.0.0.1:3000:3000"
+    volumes:
+      # Read-only доступ к Docker socket для чтения статуса/логов/метрик.
+      # Для start/stop/restart нужен RW — убери ":ro", если нужно управление.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - PORT=3000
